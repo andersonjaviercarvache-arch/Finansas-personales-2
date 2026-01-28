@@ -12,23 +12,31 @@ def load_data():
         try:
             df = pd.read_csv(file_name, skiprows=12, sep=None, engine='python', encoding=enc, index_col=False)
             df = df.loc[:, ~df.columns.str.contains('^Unnamed')]
-            df = df.dropna(how='all', axis=1)
             
-            # Normalización de columnas
+            # 1. Normalización de nombres de columnas
             df.columns = (df.columns.str.strip().str.lower()
                           .str.replace('í', 'i').str.replace('ó', 'o')
                           .str.replace('á', 'a').str.replace('é', 'e').str.replace('ú', 'u'))
             
-            df = df.dropna(subset=['fecha', 'monto'])
-            df['fecha'] = pd.to_datetime(df['fecha'], dayfirst=True)
-            df['monto'] = pd.to_numeric(df['monto'], errors='coerce').fillna(0)
+            # 2. LIMPIEZA DE MONTOS (ELIMINAR SÍMBOLOS RARO)
+            # Esto quita el signo $, comas de miles y espacios para que Python vea solo el número
+            if 'monto' in df.columns:
+                df['monto'] = (df['monto'].astype(str)
+                               .str.replace('$', '', regex=False)
+                               .str.replace(',', '', regex=False)
+                               .str.strip())
+                df['monto'] = pd.to_numeric(df['monto'], errors='coerce').fillna(0)
             
-            # Asegurar columnas de texto
+            # 3. Limpiar fechas y filtrar filas vacías
+            df = df.dropna(subset=['fecha'])
+            df['fecha'] = pd.to_datetime(df['fecha'], dayfirst=True)
+            
+            # 4. Asegurar columnas de texto
             for col in ['tipo', 'categoria', 'beneficiario', 'detalle']:
                 if col not in df.columns: df[col] = "N/A"
                 df[col] = df[col].fillna('Sin Clasificar').astype(str).str.strip()
             
-            # Cálculo de Balance
+            # 5. Cálculo de Balance
             df = df.sort_values('fecha')
             df['monto_signo'] = df.apply(lambda x: x['monto'] if x['tipo'].lower() == 'ingreso' else -x['monto'], axis=1)
             df['balance_acumulado'] = df['monto_signo'].cumsum()
@@ -38,12 +46,13 @@ def load_data():
             continue
     return None
 
-st.title("📊 Control de Finanzas con Montos Detallados")
+st.title("📊 Control de Finanzas - Cantidades Corregidas")
 
 df = load_data()
 
-if df is not None:
+if df is not None and not df.empty:
     # --- MÉTRICAS ---
+    # Usamos sum() directamente sobre la columna limpia
     total_in = df[df['tipo'].str.lower() == 'ingreso']['monto'].sum()
     total_out = df[df['tipo'].str.lower() == 'egreso']['monto'].sum()
     balance = total_in - total_out
@@ -55,57 +64,35 @@ if df is not None:
 
     st.markdown("---")
 
-    # --- PESTAÑAS ---
-    tab1, tab2, tab3 = st.tabs(["📉 Egresos", "📈 Ingresos", "🗓️ Evolución"])
-
+    # --- GRÁFICOS ---
+    tab1, tab2 = st.tabs(["📊 Distribución", "📈 Tendencia"])
+    
     with tab1:
-        df_egresos = df[(df['tipo'].str.lower() == 'egreso') & (df['monto'] > 0)]
-        if not df_egresos.empty:
-            col_p, col_b = st.columns(2)
-            with col_p:
-                st.plotly_chart(px.pie(df_egresos, values='monto', names='categoria', hole=0.4, title="Gastos por Categoria"), use_container_width=True)
-            with col_b:
-                top_egresos = df_egresos.groupby('beneficiario')['monto'].sum().sort_values(ascending=False).head(10).reset_index()
-                # text_auto='.2s' añade los valores sobre las barras
-                fig_bar = px.bar(top_egresos, x='monto', y='beneficiario', orientation='h', title="Top 10 Egresos", color='monto', color_continuous_scale='Reds', text_auto='.2s')
-                st.plotly_chart(fig_bar, use_container_width=True)
+        col_a, col_b = st.columns(2)
+        with col_a:
+            df_egresos = df[(df['tipo'].str.lower() == 'egreso') & (df['monto'] > 0)]
+            if not df_egresos.empty:
+                st.plotly_chart(px.pie(df_egresos, values='monto', names='categoria', title="Gastos por Categoría"), use_container_width=True)
+            else:
+                st.info("No hay gastos mayores a $0 para graficar.")
+        with col_b:
+            df_ingresos = df[(df['tipo'].str.lower() == 'ingreso') & (df['monto'] > 0)]
+            if not df_ingresos.empty:
+                st.plotly_chart(px.pie(df_ingresos, values='monto', names='categoria', title="Fuentes de Ingreso"), use_container_width=True)
 
     with tab2:
-        df_ingresos = df[(df['tipo'].str.lower() == 'ingreso') & (df['monto'] > 0)]
-        if not df_ingresos.empty:
-            col_p_in, col_b_in = st.columns(2)
-            with col_p_in:
-                st.plotly_chart(px.pie(df_ingresos, values='monto', names='categoria', hole=0.4, title="Fuentes de Ingresos"), use_container_width=True)
-            with col_b_in:
-                top_ingresos = df_ingresos.groupby('beneficiario')['monto'].sum().sort_values(ascending=False).head(10).reset_index()
-                fig_bar_in = px.bar(top_ingresos, x='monto', y='beneficiario', orientation='h', title="Principales Orígenes", color='monto', color_continuous_scale='Greens', text_auto='.2s')
-                st.plotly_chart(fig_bar_in, use_container_width=True)
+        st.plotly_chart(px.area(df, x='fecha', y='balance_acumulado', title="Evolución del Saldo"), use_container_width=True)
 
-    with tab3:
-        st.plotly_chart(px.area(df, x='fecha', y='balance_acumulado', title="Saldo Acumulado en el Tiempo"), use_container_width=True)
-
-    st.markdown("---")
-
-    # --- BUSCADOR Y TABLA FORMATEADA ---
-    st.subheader("🔍 Buscador de Transacciones")
-    busqueda = st.text_input("Filtrar movimientos:", "")
-
-    mask = (df['detalle'].str.contains(busqueda, case=False) | 
-            df['beneficiario'].str.contains(busqueda, case=False) |
-            df['categoria'].str.contains(busqueda, case=False))
-    
-    df_filtrado = df[mask].sort_values('fecha', ascending=False)
-
-    # Aplicamos formato de moneda a las columnas numéricas de la tabla
+    # --- TABLA ---
+    st.subheader("📑 Listado de Movimientos")
     st.dataframe(
-        df_filtrado[['fecha', 'tipo', 'monto', 'categoria', 'beneficiario', 'detalle', 'balance_acumulado']]
-        .style.format({
-            "monto": "${:,.2f}",
-            "balance_acumulado": "${:,.2f}"
-        }), 
+        df[['fecha', 'tipo', 'monto', 'categoria', 'beneficiario', 'detalle', 'balance_acumulado']]
+        .sort_values('fecha', ascending=False)
+        .style.format({"monto": "${:,.2f}", "balance_acumulado": "${:,.2f}"}),
         use_container_width=True
     )
 
 else:
-    st.error("No se pudo cargar el archivo.")
+    st.error("No se detectaron datos. Revisa que la columna 'Monto' tenga números en tu archivo.")
+
 
