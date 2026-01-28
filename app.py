@@ -15,36 +15,45 @@ def load_data():
             df = df.loc[:, ~df.columns.str.contains('^Unnamed')]
             df = df.dropna(how='all', axis=1)
             
-            # Limpieza profunda de nombres de columnas
-            df.columns = df.columns.str.strip().str.replace('í', 'i').str.replace('ó', 'o')
+            # --- LIMPIEZA AGRESIVA DE COLUMNAS ---
+            # Pasamos todo a minúsculas y quitamos tildes para no fallar nunca
+            df.columns = (df.columns.str.strip()
+                          .str.lower()
+                          .str.replace('í', 'i')
+                          .str.replace('ó', 'o')
+                          .str.replace('á', 'a')
+                          .str.replace('é', 'e')
+                          .str.replace('ú', 'u'))
             
-            # Limpiar datos
-            df = df.dropna(subset=['Fecha', 'Monto'])
-            df['Fecha'] = pd.to_datetime(df['Fecha'], dayfirst=True)
-            df['Monto'] = pd.to_numeric(df['Monto'], errors='coerce').fillna(0)
+            # Limpiar datos básicos
+            df = df.dropna(subset=['fecha', 'monto'])
+            df['fecha'] = pd.to_datetime(df['fecha'], dayfirst=True)
+            df['monto'] = pd.to_numeric(df['monto'], errors='coerce').fillna(0)
             
-            # Asegurar que las columnas de texto existan y no tengan nulos
-            for col in ['Tipo', 'Categoria', 'Beneficiario', 'Detalle']:
-                if col in df.columns:
-                    df[col] = df[col].fillna('Sin Clasificar').astype(str).str.strip()
+            # Asegurar que las columnas existan con los nombres nuevos (minúsculas y sin tildes)
+            columnas_esperadas = ['tipo', 'categoria', 'beneficiario', 'detalle']
+            for col in columnas_esperadas:
+                if col not in df.columns:
+                    df[col] = "No disponible" # Crea la columna si no existe para evitar el KeyError
+                df[col] = df[col].fillna('Sin Clasificar').astype(str).str.strip()
             
-            df = df.sort_values('Fecha')
-            df['Monto_Signo'] = df.apply(lambda x: x['Monto'] if x['Tipo'] == 'Ingreso' else -x['Monto'], axis=1)
-            df['Balance_Acumulado'] = df['Monto_Signo'].cumsum()
+            df = df.sort_values('fecha')
+            df['monto_signo'] = df.apply(lambda x: x['monto'] if x['tipo'].lower() == 'ingreso' else -x['monto'], axis=1)
+            df['balance_acumulado'] = df['monto_signo'].cumsum()
             
             return df
         except Exception:
             continue
     return None
 
-st.title("📊 Análisis Financiero con Buscador")
+st.title("📊 Análisis Financiero Final")
 
 df = load_data()
 
 if df is not None:
-    # --- MÉTRICAS ---
-    total_in = df[df['Tipo'] == 'Ingreso']['Monto'].sum()
-    total_out = df[df['Tipo'] == 'Egreso']['Monto'].sum()
+    # Métricas usando nombres en minúscula
+    total_in = df[df['tipo'].str.lower() == 'ingreso']['monto'].sum()
+    total_out = df[df['tipo'].str.lower() == 'egreso']['monto'].sum()
     balance = total_in - total_out
 
     c1, c2, c3 = st.columns(3)
@@ -54,66 +63,48 @@ if df is not None:
 
     st.markdown("---")
 
-    # --- PESTAÑAS ---
     tab1, tab2, tab3 = st.tabs(["📉 Gastos", "📈 Ingresos", "🗓️ Evolución"])
 
     with tab1:
-        # Filtrar solo egresos con monto mayor a 0 para el gráfico de pastel
-        df_egresos = df[(df['Tipo'] == 'Egreso') & (df['Monto'] > 0)]
+        df_egresos = df[(df['tipo'].str.lower() == 'egreso') & (df['monto'] > 0)]
         if not df_egresos.empty:
             col_p, col_b = st.columns(2)
             with col_p:
-                fig_pie = px.pie(df_egresos, values='Monto', names='Categoria', hole=0.4, title="Gastos por Categoria")
-                st.plotly_chart(fig_pie, use_container_width=True)
+                st.plotly_chart(px.pie(df_egresos, values='monto', names='categoria', hole=0.4, title="Gastos por Categoria"), use_container_width=True)
             with col_b:
-                top_egresos = df_egresos.groupby('Beneficiario')['Monto'].sum().sort_values(ascending=False).head(10).reset_index()
-                fig_bar = px.bar(top_egresos, x='Monto', y='Beneficiario', orientation='h', title="Top 10 Beneficiarios", color='Monto', color_continuous_scale='Reds')
-                st.plotly_chart(fig_bar, use_container_width=True)
+                top_egresos = df_egresos.groupby('beneficiario')['monto'].sum().sort_values(ascending=False).head(10).reset_index()
+                st.plotly_chart(px.bar(top_egresos, x='monto', y='beneficiario', orientation='h', title="Top 10 Beneficiarios", color='monto', color_continuous_scale='Reds'), use_container_width=True)
         else:
-            st.warning("No se encontraron registros de Egresos para graficar.")
+            st.warning("No se encontraron Egresos.")
 
     with tab2:
-        df_ingresos = df[(df['Tipo'] == 'Ingreso') & (df['Monto'] > 0)]
+        df_ingresos = df[(df['tipo'].str.lower() == 'ingreso') & (df['monto'] > 0)]
         if not df_ingresos.empty:
             col_p_in, col_b_in = st.columns(2)
             with col_p_in:
-                fig_pie_in = px.pie(df_ingresos, values='Monto', names='Categoria', hole=0.4, title="Fuentes de Ingresos")
-                st.plotly_chart(fig_pie_in, use_container_width=True)
+                st.plotly_chart(px.pie(df_ingresos, values='monto', names='categoria', hole=0.4, title="Fuentes de Ingresos"), use_container_width=True)
             with col_b_in:
-                top_ingresos = df_ingresos.groupby('Beneficiario')['Monto'].sum().sort_values(ascending=False).head(10).reset_index()
-                fig_bar_in = px.bar(top_ingresos, x='Monto', y='Beneficiario', orientation='h', title="Principales Origenes", color='Monto', color_continuous_scale='Greens')
-                st.plotly_chart(fig_bar_in, use_container_width=True)
+                top_ingresos = df_ingresos.groupby('beneficiario')['monto'].sum().sort_values(ascending=False).head(10).reset_index()
+                st.plotly_chart(px.bar(top_ingresos, x='monto', y='beneficiario', orientation='h', title="Principales Origenes", color='monto', color_continuous_scale='Greens'), use_container_width=True)
         else:
-            st.warning("No se encontraron registros de Ingresos para graficar.")
+            st.warning("No se encontraron Ingresos.")
 
     with tab3:
-        st.plotly_chart(px.area(df, x='Fecha', y='Balance_Acumulado', title="Evolución del Saldo"), use_container_width=True)
+        st.plotly_chart(px.area(df, x='fecha', y='balance_acumulado', title="Evolución del Saldo"), use_container_width=True)
 
     st.markdown("---")
 
-    # --- BUSCADOR Y EXPORTACIÓN ---
-    st.subheader("🔍 Buscador y Filtros")
-    busqueda = st.text_input("Escribe para filtrar (Detalle, Categoria o Beneficiario):", "")
+    # --- BUSCADOR ---
+    st.subheader("🔍 Buscador de Movimientos")
+    busqueda = st.text_input("Filtrar por detalle, beneficiario o categoria:", "")
 
-    mask = df['Detalle'].str.contains(busqueda, case=False) | \
-           df['Beneficiario'].str.contains(busqueda, case=False) | \
-           df['Categoria'].str.contains(busqueda, case=False)
+    mask = (df['detalle'].str.contains(busqueda, case=False) | 
+            df['beneficiario'].str.contains(busqueda, case=False) |
+            df['categoria'].str.contains(busqueda, case=False))
     
-    df_filtrado = df[mask].sort_values('Fecha', ascending=False)
+    df_filtrado = df[mask].sort_values('fecha', ascending=False)
 
-    # Botón de Descarga
-    output = BytesIO()
-    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-        df_filtrado.to_excel(writer, index=False, sheet_name='Resultados')
-    
-    st.download_button(
-        label="📥 Descargar resultados en Excel",
-        data=output.getvalue(),
-        file_name="filtro_finanzas.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
-
-    st.dataframe(df_filtrado[['Fecha', 'Tipo', 'Monto', 'Categoria', 'Beneficiario', 'Detalle', 'Balance_Acumulado']], use_container_width=True)
+    st.dataframe(df_filtrado[['fecha', 'tipo', 'monto', 'categoria', 'beneficiario', 'detalle', 'balance_acumulado']], use_container_width=True)
 
 else:
-    st.error("No se pudo leer el archivo CSV. Revisa el nombre y que esté en la carpeta.")
+    st.error("Error crítico: No se pudo procesar el archivo. Revisa que las columnas 'Fecha', 'Tipo' y 'Monto' existan.")
