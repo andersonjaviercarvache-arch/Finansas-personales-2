@@ -12,6 +12,7 @@ def load_data():
         try:
             df = pd.read_csv(file_name, skiprows=12, sep=None, engine='python', encoding=enc, index_col=False)
             df = df.loc[:, ~df.columns.str.contains('^Unnamed')]
+            # Normalizar columnas
             df.columns = (df.columns.str.strip().str.lower()
                           .str.replace('í', 'i').str.replace('ó', 'o')
                           .str.replace('á', 'a').str.replace('é', 'e').str.replace('ú', 'u'))
@@ -44,6 +45,10 @@ def load_data():
 df = load_data()
 
 if df is not None:
+    # --- CÁLCULOS GLOBALES (Para evitar NameError) ---
+    total_ingresos_global = df[df['tipo'] == 'ingreso']['monto'].sum()
+    total_egresos_global = df[df['tipo'] == 'egreso']['monto'].sum()
+
     st.sidebar.title("📌 Navegación")
     seccion = st.sidebar.radio("Ir a:", ["Vista General", "Gráficos Interactivos"])
 
@@ -56,14 +61,13 @@ if df is not None:
                 df['categoria'].str.contains(busqueda, case=False))
         df_f = df[mask]
 
-        # CORRECCIÓN AQUÍ: Usamos .str.lower() o comparamos directo si ya es minúscula
-        ing = df_f[df_f['tipo'] == 'ingreso']['monto'].sum()
-        egr = df_f[df_f['tipo'] == 'egreso']['monto'].sum()
+        ing_f = df_f[df_f['tipo'] == 'ingreso']['monto'].sum()
+        egr_f = df_f[df_f['tipo'] == 'egreso']['monto'].sum()
 
         c1, c2, c3 = st.columns(3)
-        c1.metric("🟢 Ingresos", f"${ing:,.2f}")
-        c2.metric("🔴 Egresos", f"-${egr:,.2f}")
-        c3.metric("⚖️ Balance", f"${ing - egr:,.2f}")
+        c1.metric("🟢 Ingresos", f"${ing_f:,.2f}")
+        c2.metric("🔴 Egresos", f"-${egr_f:,.2f}")
+        c3.metric("⚖️ Balance", f"${ing_f - egr_f:,.2f}")
 
         st.dataframe(df_f[['fecha', 'tipo', 'monto', 'categoria', 'beneficiario', 'detalle', 'balance_acumulado']]
                      .sort_values('fecha', ascending=False).style.format({"monto": "${:,.2f}", "balance_acumulado": "${:,.2f}"}), 
@@ -84,26 +88,26 @@ if df is not None:
         with col1:
             st.subheader("🟥 Distribución de Egresos")
             df_egr = df[df['tipo'] == 'egreso']
-            if not egr == 0:
+            if total_egresos_global > 0:
                 fig_tree = px.treemap(df_egr, path=['categoria', 'beneficiario'], values='monto',
                                       color='monto', color_continuous_scale='Reds')
                 st.plotly_chart(fig_tree, use_container_width=True)
             else:
-                st.info("No hay datos de egresos.")
+                st.info("No hay datos de egresos para mostrar.")
 
         with col2:
             st.subheader("🟩 Origen de Ingresos")
             df_ing = df[df['tipo'] == 'ingreso']
-            if not ing == 0:
+            if total_ingresos_global > 0:
                 fig_sun = px.sunburst(df_ing, path=['categoria', 'beneficiario'], values='monto',
                                       color='monto', color_continuous_scale='Greens')
                 st.plotly_chart(fig_sun, use_container_width=True)
             else:
-                st.info("No hay datos de ingresos.")
+                st.info("No hay datos de ingresos para mostrar.")
 
-        st.subheader("📈 Tendencia del Saldo")
-        fig_line = px.area(df, x='fecha', y='balance_acumulado', title="Saldo Neto Acumulado")
+        st.subheader("📈 Tendencia del Saldo Acumulado")
+        fig_line = px.area(df, x='fecha', y='balance_acumulado', color_discrete_sequence=['#3498db'])
         st.plotly_chart(fig_line, use_container_width=True)
 
 else:
-    st.error("Asegúrate de que el archivo CSV esté en la carpeta del proyecto.")
+    st.error("No se pudo cargar el archivo CSV.")
