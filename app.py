@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
+from io import BytesIO
 
 st.set_page_config(page_title="Mi Dashboard Financiero", layout="wide", page_icon="💰")
 
@@ -10,24 +11,23 @@ def load_data():
     
     for enc in encodings:
         try:
-            # Saltamos las 12 filas de metadatos
             df = pd.read_csv(file_name, skiprows=12, sep=None, engine='python', encoding=enc, index_col=False)
             df = df.loc[:, ~df.columns.str.contains('^Unnamed')]
             df = df.dropna(how='all', axis=1)
             
-            # Normalizar nombres de columnas
+            # Limpieza profunda de nombres de columnas
             df.columns = df.columns.str.strip().str.replace('í', 'i').str.replace('ó', 'o')
             
-            # Limpieza y conversión
+            # Limpiar datos
             df = df.dropna(subset=['Fecha', 'Monto'])
             df['Fecha'] = pd.to_datetime(df['Fecha'], dayfirst=True)
             df['Monto'] = pd.to_numeric(df['Monto'], errors='coerce').fillna(0)
             
-            # Aseguramos que Detalle y Beneficiario sean texto para el buscador
-            df['Detalle'] = df['Detalle'].fillna('').astype(str)
-            df['Beneficiario'] = df['Beneficiario'].fillna('').astype(str)
+            # Asegurar que las columnas de texto existan y no tengan nulos
+            for col in ['Tipo', 'Categoria', 'Beneficiario', 'Detalle']:
+                if col in df.columns:
+                    df[col] = df[col].fillna('Sin Clasificar').astype(str).str.strip()
             
-            # Ordenar cronológicamente y calcular Balance
             df = df.sort_values('Fecha')
             df['Monto_Signo'] = df.apply(lambda x: x['Monto'] if x['Tipo'] == 'Ingreso' else -x['Monto'], axis=1)
             df['Balance_Acumulado'] = df['Monto_Signo'].cumsum()
@@ -37,7 +37,7 @@ def load_data():
             continue
     return None
 
-st.title("📊 Análisis Financiero con Buscador Inteligente")
+st.title("📊 Análisis Financiero con Buscador")
 
 df = load_data()
 
@@ -54,50 +54,66 @@ if df is not None:
 
     st.markdown("---")
 
-    # --- PESTAÑAS DE ANÁLISIS ---
-    tab1, tab2, tab3 = st.tabs(["📉 Gastos", "📈 Ingresos", "🗓️ Evolución Temporal"])
+    # --- PESTAÑAS ---
+    tab1, tab2, tab3 = st.tabs(["📉 Gastos", "📈 Ingresos", "🗓️ Evolución"])
 
     with tab1:
-        df_egresos = df[df['Tipo'] == 'Egreso']
-        col_p, col_b = st.columns(2)
-        with col_p:
-            st.plotly_chart(px.pie(df_egresos, values='Monto', names='Categoria', hole=0.4, title="Gastos por Categoría"), use_container_width=True)
-        with col_b:
-            top_egresos = df_egresos.groupby('Beneficiario')['Monto'].sum().sort_values(ascending=False).head(10).reset_index()
-            st.plotly_chart(px.bar(top_egresos, x='Monto', y='Beneficiario', orientation='h', title="Top 10 Beneficiarios", color_continuous_scale='Reds', color='Monto'), use_container_width=True)
+        # Filtrar solo egresos con monto mayor a 0 para el gráfico de pastel
+        df_egresos = df[(df['Tipo'] == 'Egreso') & (df['Monto'] > 0)]
+        if not df_egresos.empty:
+            col_p, col_b = st.columns(2)
+            with col_p:
+                fig_pie = px.pie(df_egresos, values='Monto', names='Categoria', hole=0.4, title="Gastos por Categoria")
+                st.plotly_chart(fig_pie, use_container_width=True)
+            with col_b:
+                top_egresos = df_egresos.groupby('Beneficiario')['Monto'].sum().sort_values(ascending=False).head(10).reset_index()
+                fig_bar = px.bar(top_egresos, x='Monto', y='Beneficiario', orientation='h', title="Top 10 Beneficiarios", color='Monto', color_continuous_scale='Reds')
+                st.plotly_chart(fig_bar, use_container_width=True)
+        else:
+            st.warning("No se encontraron registros de Egresos para graficar.")
 
     with tab2:
-        df_ingresos = df[df['Tipo'] == 'Ingreso']
-        col_p_in, col_b_in = st.columns(2)
-        with col_p_in:
-            st.plotly_chart(px.pie(df_ingresos, values='Monto', names='Categoria', hole=0.4, title="Fuentes de Ingresos"), use_container_width=True)
-        with col_b_in:
-            top_ingresos = df_ingresos.groupby('Beneficiario')['Monto'].sum().sort_values(ascending=False).head(10).reset_index()
-            st.plotly_chart(px.bar(top_ingresos, x='Monto', y='Beneficiario', orientation='h', title="Principales Orígenes", color_continuous_scale='Greens', color='Monto'), use_container_width=True)
+        df_ingresos = df[(df['Tipo'] == 'Ingreso') & (df['Monto'] > 0)]
+        if not df_ingresos.empty:
+            col_p_in, col_b_in = st.columns(2)
+            with col_p_in:
+                fig_pie_in = px.pie(df_ingresos, values='Monto', names='Categoria', hole=0.4, title="Fuentes de Ingresos")
+                st.plotly_chart(fig_pie_in, use_container_width=True)
+            with col_b_in:
+                top_ingresos = df_ingresos.groupby('Beneficiario')['Monto'].sum().sort_values(ascending=False).head(10).reset_index()
+                fig_bar_in = px.bar(top_ingresos, x='Monto', y='Beneficiario', orientation='h', title="Principales Origenes", color='Monto', color_continuous_scale='Greens')
+                st.plotly_chart(fig_bar_in, use_container_width=True)
+        else:
+            st.warning("No se encontraron registros de Ingresos para graficar.")
 
     with tab3:
-        st.subheader("Balance Acumulado")
-        st.plotly_chart(px.area(df, x='Fecha', y='Balance_Acumulado', color_discrete_sequence=['#3498db']), use_container_width=True)
+        st.plotly_chart(px.area(df, x='Fecha', y='Balance_Acumulado', title="Evolución del Saldo"), use_container_width=True)
 
     st.markdown("---")
 
-    # --- BUSCADOR Y TABLA ---
-    st.subheader("🔍 Buscador de Movimientos")
-    busqueda = st.text_input("Filtrar por detalle, beneficiario o categoría:", "")
+    # --- BUSCADOR Y EXPORTACIÓN ---
+    st.subheader("🔍 Buscador y Filtros")
+    busqueda = st.text_input("Escribe para filtrar (Detalle, Categoria o Beneficiario):", "")
 
-    # Aplicamos el filtro de búsqueda
-    df_filtrado = df[
-        df['Detalle'].str.contains(busqueda, case=False) | 
-        df['Beneficiario'].str.contains(busqueda, case=False) |
-        df['Categoria'].str.contains(busqueda, case=False)
-    ]
+    mask = df['Detalle'].str.contains(busqueda, case=False) | \
+           df['Beneficiario'].str.contains(busqueda, case=False) | \
+           df['Categoria'].str.contains(busqueda, case=False)
+    
+    df_filtrado = df[mask].sort_values('Fecha', ascending=False)
 
-    st.write(f"Mostrando {len(df_filtrado)} movimientos encontrados:")
-    st.dataframe(
-        df_filtrado[['Fecha', 'Tipo', 'Monto', 'Categoria', 'Beneficiario', 'Detalle', 'Balance_Acumulado']]
-        .sort_values('Fecha', ascending=False), 
-        use_container_width=True
+    # Botón de Descarga
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        df_filtrado.to_excel(writer, index=False, sheet_name='Resultados')
+    
+    st.download_button(
+        label="📥 Descargar resultados en Excel",
+        data=output.getvalue(),
+        file_name="filtro_finanzas.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
 
+    st.dataframe(df_filtrado[['Fecha', 'Tipo', 'Monto', 'Categoria', 'Beneficiario', 'Detalle', 'Balance_Acumulado']], use_container_width=True)
+
 else:
-    st.error("Archivo no encontrado o error en el formato.")
+    st.error("No se pudo leer el archivo CSV. Revisa el nombre y que esté en la carpeta.")
