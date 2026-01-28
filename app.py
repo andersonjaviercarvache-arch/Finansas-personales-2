@@ -1,8 +1,7 @@
 import streamlit as st
 import pandas as pd
 
-# Configuración de la página
-st.set_page_config(page_title="Control Financiero", layout="wide", page_icon="💰")
+st.set_page_config(page_title="Control Financiero Real", layout="wide", page_icon="💰")
 
 def load_data():
     file_name = "Estado de cuenta - 01_01_2026 - 27_01_2026.xlsx - Balance.csv"
@@ -10,86 +9,98 @@ def load_data():
     
     for enc in encodings:
         try:
-            # Lectura del archivo saltando el encabezado del banco
             df = pd.read_csv(file_name, skiprows=12, sep=None, engine='python', encoding=enc, index_col=False)
             df = df.loc[:, ~df.columns.str.contains('^Unnamed')]
             
-            # Normalización de nombres de columnas (minúsculas y sin tildes)
+            # Normalización de columnas
             df.columns = (df.columns.str.strip().str.lower()
                           .str.replace('í', 'i').str.replace('ó', 'o')
                           .str.replace('á', 'a').str.replace('é', 'e').str.replace('ú', 'u'))
             
-            # Limpieza profunda de montos
+            # Limpieza de montos: eliminamos todo excepto números, puntos, comas y el signo menos
             if 'monto' in df.columns:
                 df['monto'] = df['monto'].astype(str).str.replace(r'[^\d.,-]', '', regex=True)
-                def fix_numbers(val):
-                    if ',' in val and '.' in val: val = val.replace('.', '').replace(',', '.')
-                    elif ',' in val: val = val.replace(',', '.')
-                    return val
-                df['monto'] = df['monto'].apply(fix_numbers)
-                df['monto'] = pd.to_numeric(df['monto'], errors='coerce').fillna(0)
+                
+                def clean_numeric(val):
+                    if not val or val == 'nan': return 0.0
+                    # Si el banco usa coma como decimal y punto como miles (ej: 1.200,50)
+                    if ',' in val and '.' in val:
+                        val = val.replace('.', '').replace(',', '.')
+                    elif ',' in val:
+                        val = val.replace(',', '.')
+                    return float(val)
+
+                df['monto'] = df['monto'].apply(clean_numeric)
             
-            # Limpieza de fechas
             df = df.dropna(subset=['fecha'])
             df['fecha'] = pd.to_datetime(df['fecha'], dayfirst=True)
             
-            # Asegurar columnas de texto
+            # Normalizar tipos de movimiento
             for col in ['tipo', 'categoria', 'beneficiario', 'detalle']:
-                if col not in df.columns: df[col] = "n/a"
-                df[col] = df[col].fillna('sin clasificar').astype(str).str.strip().str.lower()
-            
-            # Cálculo de Balance Acumulado
-            df = df.sort_values('fecha')
-            df['monto_neto'] = df.apply(lambda x: x['monto'] if x['tipo'] == 'ingreso' else -x['monto'], axis=1)
-            df['balance_acumulado'] = df['monto_neto'].cumsum()
+                if col in df.columns:
+                    df[col] = df[col].fillna('n/a').astype(str).str.strip().str.lower()
             
             return df
         except Exception:
             continue
     return None
 
-# --- INTERFAZ PRINCIPAL ---
-st.title("⚖️ Estado de Cuenta e Historial")
+# --- ENTRADA DE SALDO REAL ---
+st.sidebar.header("⚙️ Ajuste de Saldo")
+saldo_inicial = st.sidebar.number_input(
+    "Saldo Inicial (Antes del primer movimiento):", 
+    value=0.0, 
+    step=100.0,
+    help="Ingresa el saldo que tenías en tu cuenta el día 01/01/2026"
+)
 
 df = load_data()
 
 if df is not None:
-    # --- BUSCADOR ---
-    st.subheader("🔍 Buscador de Movimientos")
-    busqueda = st.text_input("Escribe el detalle, categoría o beneficiario que deseas encontrar:", "")
+    # --- CÁLCULO DE BALANCE REAL ---
+    # Ordenamos cronológicamente para el acumulado
+    df = df.sort_values('fecha', ascending=True)
+    
+    # Lógica de signos: Algunos bancos ya traen el Egreso como negativo. 
+    # Aquí nos aseguramos de no "doble restar".
+    def calcular_neto(row):
+        monto = abs(row['monto'])
+        return monto if row['tipo'] == 'ingreso' else -monto
 
-    # Aplicar Filtro de Búsqueda
+    df['monto_neto'] = df.apply(calcular_neto, axis=1)
+    
+    # El balance acumulado empieza desde el Saldo Inicial que tú pongas
+    df['balance_acumulado'] = saldo_inicial + df['monto_neto'].cumsum()
+
+    # --- INTERFAZ ---
+    st.title("⚖️ Balance Real de Cuenta")
+    
+    # Buscador
+    busqueda = st.text_input("🔍 Buscar en el historial:", "")
     mask = (df['detalle'].str.contains(busqueda, case=False) | 
             df['beneficiario'].str.contains(busqueda, case=False) |
             df['categoria'].str.contains(busqueda, case=False))
-    
     df_f = df[mask]
 
-    # --- MÉTRICAS (Dinámicas según la búsqueda) ---
-    ing_f = df_f[df_f['tipo'] == 'ingreso']['monto'].sum()
-    egr_f = df_f[df_f['tipo'] == 'egreso']['monto'].sum()
-    balance_f = ing_f - egr_f
+    # Métricas
+    ing = df_f[df_f['tipo'] == 'ingreso']['monto'].sum()
+    egr = df_f[df_f['tipo'] == 'egreso']['monto'].sum()
+    saldo_actual = df['balance_acumulado'].iloc[-1] if not df.empty else saldo_inicial
 
-    col1, col2, col3 = st.columns(3)
-    col1.metric("🟢 Ingresos Filtrados", f"${ing_f:,.2f}")
-    col2.metric("🔴 Egresos Filtrados", f"-${egr_f:,.2f}")
-    col3.metric("⚖️ Balance Neto", f"${balance_f:,.2f}")
+    c1, c2, c3 = st.columns(3)
+    c1.metric("🟢 Total Ingresos", f"${ing:,.2f}")
+    c2.metric("🔴 Total Egresos", f"-${egr:,.2f}")
+    c3.metric("🏦 Saldo Final Estimado", f"${saldo_actual:,.2f}")
 
-    st.markdown("---")
+    st.divider()
 
-    # --- TABLA DE DATOS ---
-    st.subheader("📑 Listado Detallado de Transacciones")
-    
-    # Formateamos la tabla para que se vea impecable
+    # Tabla con el saldo más reciente arriba
+    st.subheader("📑 Historial de Movimientos")
     st.dataframe(
         df_f[['fecha', 'tipo', 'monto', 'categoria', 'beneficiario', 'detalle', 'balance_acumulado']]
         .sort_values('fecha', ascending=False)
-        .style.format({
-            "monto": "${:,.2f}", 
-            "balance_acumulado": "${:,.2f}"
-        }),
+        .style.format({"monto": "${:,.2f}", "balance_acumulado": "${:,.2f}"}),
         use_container_width=True
     )
-
 else:
-    st.error("No se pudo cargar el archivo. Verifica que el nombre sea exacto y esté en la misma carpeta.")
+    st.error("No se pudo leer el archivo.")
